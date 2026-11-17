@@ -44,6 +44,12 @@ There are no tests and no dependencies. Verify by building and using Mission Con
          AXGroup id=mc.spaces                    Spaces bar (excluded)
      ```
      The bundle id is parsed from the identifier, the window id from `wid`.
+   - `sanitize()`: windows assigned to several desktops appear only under *another* Space's
+     identifier, twice, with that Space's frame. Thumbnails of the current Space (private
+     `CGSCopyManagedDisplaySpaces`) are kept once per `wid`; the others are rebuilt by
+     `relocate()` from the WindowManager "App Icon Window"s (layer 17, centred on each thumbnail's
+     bottom edge, +41 pt), sized as real window × the shared thumbnail scale, matched by
+     closeness to their old layout.
 4. **Window lookup & closing**: `match()` resolves a thumbnail to a real AX window. With `wid`,
    it gets the owner PID from `CGWindowListCopyWindowInfo` and compares each AX window via the
    private `_AXUIElementGetWindow`, which is stable and used by yabai and AltTab. Without `wid`,

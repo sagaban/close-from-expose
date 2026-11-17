@@ -80,6 +80,14 @@ struct Thumbnail {
     /// CGWindowID of the real window ("wid" AX attribute on macOS 27).
     let windowID: CGWindowID?
 
+    /// Space the thumbnail belongs to, parsed from "<bundle id>.space.<n>".
+    let spaceID: Int?
+
+    static func spaceID(fromIdentifier ident: String) -> Int? {
+        guard let r = ident.range(of: ".space.", options: .backwards) else { return nil }
+        return Int(ident[r.upperBound...])
+    }
+
     static func bundleID(fromIdentifier ident: String) -> String? {
         guard let r = ident.range(of: ".space.", options: .backwards) else { return nil }
         let id = String(ident[..<r.lowerBound])
@@ -133,14 +141,93 @@ final class MissionControl {
                 // Untitled windows (e.g. PDFgear) are fine when the identifier tells us the app.
                 if !c.requireTitle || !title.isEmpty || bundleID != nil {
                     out.append(Thumbnail(title: title, frame: f, bundleID: bundleID,
-                                         windowID: (axAttr(e, "wid") as? NSNumber)?.uint32Value))
+                                         windowID: (axAttr(e, "wid") as? NSNumber)?.uint32Value,
+                                         spaceID: Thumbnail.spaceID(fromIdentifier: ident)))
                     return  // outermost match wins
                 }
             }
             for ch in axChildren(e) { walk(ch, depth: depth + 1) }
         }
         for p in c.processes { if let app = appElement(p) { walk(app, depth: 0) } }
-        return out
+        return sanitize(out)
+    }
+
+    /// Windows assigned to several desktops (e.g. "Options → Assign To → All Desktops") show up only
+    /// under another Space's identifier, listed twice, with that Space's frame — not where they're
+    /// drawn. Keep the current Space's thumbnails once per window, and rebuild the others' frames.
+    func sanitize(_ ts: [Thumbnail]) -> [Thumbnail] {
+        func dedupe(_ ts: [Thumbnail]) -> [Thumbnail] {
+            var seen = Set<CGWindowID>()
+            return ts.filter { t in t.windowID.map { seen.insert($0).inserted } ?? true }
+        }
+        let current = currentSpaces()
+        guard !current.isEmpty, ts.contains(where: { $0.spaceID.map(current.contains) == true }) else { return dedupe(ts) }
+        let here = dedupe(ts.filter { $0.spaceID.map(current.contains) ?? true })
+        let hereIDs = Set(here.compactMap(\.windowID))
+        let elsewhere = dedupe(ts.filter { t in
+            guard let s = t.spaceID, !current.contains(s), let wid = t.windowID, !hereIDs.contains(wid) else { return false }
+            return !current.isDisjoint(with: spaces(ofWindow: wid))
+        })
+        return here + relocate(elsewhere, known: here)
+    }
+
+    /// WindowManager draws an "App Icon Window" (layer 17) centred on every thumbnail's bottom edge,
+    /// including the ones whose AX frame is wrong. Icons not claimed by a known thumbnail mark where
+    /// the others really are; thumbnails share one scale, so the size comes from the real window.
+    /// Identity: the assignment that best preserves their positions from the other Space's layout.
+    func relocate(_ lost: [Thumbnail], known: [Thumbnail]) -> [Thumbnail] {
+        guard !lost.isEmpty else { return [] }
+        let list = (CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]]) ?? []
+        var bounds: [CGWindowID: CGRect] = [:]
+        var icons: [CGRect] = []
+        for w in list {
+            guard let b = w[kCGWindowBounds as String] as? NSDictionary, let r = CGRect(dictionaryRepresentation: b) else { continue }
+            if let id = w[kCGWindowNumber as String] as? Int { bounds[CGWindowID(id)] = r }
+            if (w[kCGWindowOwnerName as String] as? String) == "WindowManager",
+               (w[kCGWindowLayer as String] as? Int) == 17,  // name ("App Icon Window") needs Screen Recording
+               (w[kCGWindowIsOnscreen as String] as? Bool) == true { icons.append(r) }
+        }
+        let iconOffset: CGFloat = 41  // thumbnail bottom edge = icon.minY + 41
+        func anchor(_ f: CGRect) -> CGPoint { CGPoint(x: f.midX, y: f.maxY) }
+        func anchor(icon r: CGRect) -> CGPoint { CGPoint(x: r.midX, y: r.minY + iconOffset) }
+        func near(_ a: CGPoint, _ b: CGPoint) -> Bool { abs(a.x - b.x) < 6 && abs(a.y - b.y) < 6 }
+        let free = icons.filter { i in !known.contains { near(anchor($0.frame), anchor(icon: i)) } }
+
+        let ratios = known.compactMap { t in t.windowID.flatMap { bounds[$0] }.map { t.frame.width / max($0.width, 1) } }.sorted()
+        guard free.count == lost.count, lost.count <= 6, !ratios.isEmpty else { return [] }
+        let scale = ratios[ratios.count / 2]
+
+        // Brute-force the cheapest icon assignment (≤ 6! permutations).
+        var best: [Int] = [], bestCost = CGFloat.infinity
+        func search(_ perm: [Int], _ rest: Set<Int>, _ cost: CGFloat) {
+            guard cost < bestCost else { return }
+            if rest.isEmpty { best = perm; bestCost = cost; return }
+            let t = lost[perm.count]
+            for i in rest {
+                let a = anchor(t.frame), b = anchor(icon: free[i])
+                search(perm + [i], rest.subtracting([i]), cost + hypot(a.x - b.x, a.y - b.y))
+            }
+        }
+        search([], Set(free.indices), 0)
+
+        return zip(lost, best).compactMap { t, i in
+            guard let wid = t.windowID, let real = bounds[wid] else { return nil }
+            let w = real.width * scale, h = real.height * scale, a = anchor(icon: free[i])
+            return Thumbnail(title: t.title, frame: CGRect(x: a.x - w / 2, y: a.y - h, width: w, height: h),
+                             bundleID: t.bundleID, windowID: wid, spaceID: t.spaceID)
+        }
+    }
+
+    func spaces(ofWindow wid: CGWindowID) -> Set<Int> {
+        let arr = CGSCopySpacesForWindows(CGSMainConnectionID(), 7, [NSNumber(value: wid)] as CFArray)?.takeRetainedValue()
+        return Set((arr as? [Int]) ?? [])
+    }
+
+    /// Managed Space ID currently shown on each display (private SkyLight API, as used by yabai).
+    func currentSpaces() -> Set<Int> {
+        guard let displays = CGSCopyManagedDisplaySpaces(CGSMainConnectionID())?.takeRetainedValue() as? [[String: Any]]
+        else { return [] }
+        return Set(displays.compactMap { ($0["Current Space"] as? [String: Any])?["ManagedSpaceID"] as? Int })
     }
 
     func dumpAll() -> String {
@@ -163,6 +250,13 @@ final class MissionControl {
 }
 
 // MARK: - Window lookup & closing
+
+@_silgen_name("CGSMainConnectionID")
+func CGSMainConnectionID() -> Int32
+@_silgen_name("CGSCopyManagedDisplaySpaces")
+func CGSCopyManagedDisplaySpaces(_ cid: Int32) -> Unmanaged<CFArray>?
+@_silgen_name("CGSCopySpacesForWindows")
+func CGSCopySpacesForWindows(_ cid: Int32, _ mask: Int32, _ wids: CFArray) -> Unmanaged<CFArray>?
 
 /// Private but long-stable API (used by yabai, AltTab, …): the CGWindowID behind an AX window.
 @_silgen_name("_AXUIElementGetWindow")
