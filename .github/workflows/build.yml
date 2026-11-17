@@ -32,14 +32,17 @@ jobs:
 
       - name: Package
         run: |
+          ./scripts/make-dmg.sh
           cd build
           ditto -c -k --sequesterRsrc --keepParent CloseFromExpose.app CloseFromExpose.zip
-          shasum -a 256 CloseFromExpose.zip | tee CloseFromExpose.zip.sha256
+          shasum -a 256 CloseFromExpose.dmg CloseFromExpose.zip | tee SHA256SUMS
 
       - uses: actions/upload-artifact@v4
         with:
           name: CloseFromExpose-${{ steps.version.outputs.version }}
-          path: build/CloseFromExpose.zip
+          path: |
+            build/CloseFromExpose.dmg
+            build/CloseFromExpose.zip
 
       - name: Release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -47,6 +50,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
-            build/CloseFromExpose.zip build/CloseFromExpose.zip.sha256 \
+            build/CloseFromExpose.dmg build/CloseFromExpose.zip build/SHA256SUMS \
             --title "Close from Exposé $GITHUB_REF_NAME" \
             --generate-notes

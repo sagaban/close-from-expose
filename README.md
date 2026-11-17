@@ -8,6 +8,11 @@
   Close windows straight from macOS Mission Control.
 </p>
 
+<p align="center">
+  <a href="https://github.com/sagaban/close-from-expose/releases/latest/download/CloseFromExpose.dmg"><img src="https://img.shields.io/badge/Download-.dmg-0a66d8?style=for-the-badge&logo=apple&logoColor=white" alt="Download .dmg"></a>
+  <a href="https://github.com/sagaban/close-from-expose/releases/latest"><img src="https://img.shields.io/github/v/release/sagaban/close-from-expose?style=for-the-badge" alt="Latest release"></a>
+</p>
+
 ---
 
 macOS Mission Control (formerly Exposé) shows every open window, but gives you no way to close
@@ -24,9 +29,10 @@ one. **Close from Exposé** is a small menu-bar app that adds a close button to 
 
 ## Install
 
-1. Download `CloseFromExpose.zip` from the
-   [latest release](https://github.com/sagaban/close-from-expose/releases/latest) and unzip it.
-2. Move **CloseFromExpose.app** to `/Applications`.
+1. Download
+   [**CloseFromExpose.dmg**](https://github.com/sagaban/close-from-expose/releases/latest/download/CloseFromExpose.dmg)
+   (or the `.zip` from the [latest release](https://github.com/sagaban/close-from-expose/releases/latest)).
+2. Open it and drag **CloseFromExpose.app** onto the **Applications** shortcut.
 3. The app is not notarized, so macOS will block the first launch. Either run
    ```sh
    xattr -dr com.apple.quarantine /Applications/CloseFromExpose.app

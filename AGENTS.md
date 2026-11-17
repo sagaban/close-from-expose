@@ -10,8 +10,9 @@ that adds close buttons to window thumbnails in Mission Control.
 | `Sources/main.swift` | The whole app (single file, AppKit, no Xcode project). |
 | `build.sh` | Compiles a universal `build/CloseFromExpose.app` with `swiftc`, writes `Info.plist`, signs. `./build.sh install` also copies to `/Applications` and relaunches. `VERSION=x.y.z` sets the bundle version. |
 | `scripts/create-signing-cert.sh` | One-time local self-signed code-signing identity, so rebuilds keep the Accessibility grant. |
+| `scripts/make-dmg.sh` | Packages `build/CloseFromExpose.app` into `build/CloseFromExpose.dmg` (drag-to-Applications layout). |
 | `scripts/make-icon.swift` | Draws the icon → `Resources/AppIcon.icns` + `Resources/AppIcon.png`. |
-| `.github/workflows/build.yml` | Builds on every push/PR; on a `v*` tag publishes a GitHub release with `CloseFromExpose.zip`. |
+| `.github/workflows/build.yml` | Builds on every push/PR; on a `v*` tag publishes a GitHub release with `CloseFromExpose.dmg`, `CloseFromExpose.zip` and `SHA256SUMS`. |
 
 There are no tests and no dependencies. Verify by building and using Mission Control.
 
@@ -86,8 +87,9 @@ There are no tests and no dependencies. Verify by building and using Mission Con
 ## Releasing
 
 Push a tag: `git tag v1.2.3 && git push origin v1.2.3`. CI builds a universal binary, signs it
-ad-hoc (not notarized), zips it with `ditto` and creates the GitHub release with notes and a
-SHA-256 file.
+ad-hoc (not notarized), packages a `.dmg` (`scripts/make-dmg.sh`) and a `.zip` (`ditto`), and
+creates the GitHub release with notes and `SHA256SUMS`. The README's download button links to
+`releases/latest/download/CloseFromExpose.dmg`, so keep that asset name stable.
 
 ## Known limitations / ideas
 
