@@ -123,6 +123,10 @@ final class MissionControl {
 
     func reloadConfig() { config = Config.load() }
 
+    /// relocate() memo: the search is only redone when the icons or lost windows change.
+    private var assignmentKey = ""
+    private var assignment: [Int?] = []
+
     /// All window thumbnails currently displayed.
     func thumbnails() -> [Thumbnail] {
         let c = config
@@ -174,7 +178,8 @@ final class MissionControl {
     /// WindowManager draws an "App Icon Window" (layer 17) centred on every thumbnail's bottom edge,
     /// including the ones whose AX frame is wrong. Icons not claimed by a known thumbnail mark where
     /// the others really are; thumbnails share one scale, so the size comes from the real window.
-    /// Identity: the assignment that best preserves their positions from the other Space's layout.
+    /// Identity: icon width (it fits the app name) rules out pairings; among the rest, the assignment
+    /// that best preserves their positions from the other Space's layout.
     func relocate(_ lost: [Thumbnail], known: [Thumbnail]) -> [Thumbnail] {
         guard !lost.isEmpty else { return [] }
         let list = (CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]]) ?? []
@@ -191,27 +196,49 @@ final class MissionControl {
         func anchor(_ f: CGRect) -> CGPoint { CGPoint(x: f.midX, y: f.maxY) }
         func anchor(icon r: CGRect) -> CGPoint { CGPoint(x: r.midX, y: r.minY + iconOffset) }
         func near(_ a: CGPoint, _ b: CGPoint) -> Bool { abs(a.x - b.x) < 6 && abs(a.y - b.y) < 6 }
-        let free = icons.filter { i in !known.contains { near(anchor($0.frame), anchor(icon: i)) } }
-
-        let ratios = known.compactMap { t in t.windowID.flatMap { bounds[$0] }.map { t.frame.width / max($0.width, 1) } }.sorted()
-        guard free.count == lost.count, lost.count <= 6, !ratios.isEmpty else { return [] }
-        let scale = ratios[ratios.count / 2]
-
-        // Brute-force the cheapest icon assignment (≤ 6! permutations).
-        var best: [Int] = [], bestCost = CGFloat.infinity
-        func search(_ perm: [Int], _ rest: Set<Int>, _ cost: CGFloat) {
-            guard cost < bestCost else { return }
-            if rest.isEmpty { best = perm; bestCost = cost; return }
-            let t = lost[perm.count]
-            for i in rest {
-                let a = anchor(t.frame), b = anchor(icon: free[i])
-                search(perm + [i], rest.subtracting([i]), cost + hypot(a.x - b.x, a.y - b.y))
+        // An icon's width fits the app name under it: max(66, name in system 13 pt + 1).
+        func fits(_ icon: CGRect, _ t: Thumbnail) -> Bool {
+            guard let name = t.bundleID.flatMap({ NSRunningApplication.runningApplications(withBundleIdentifier: $0).first?.localizedName })
+            else { return true }
+            let text = (name as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13)]).width
+            return abs(icon.width - max(66, text.rounded(.up) + 1)) <= 3
+        }
+        let free = icons.filter { i in
+            let a = anchor(icon: i)
+            return !known.contains { t in
+                near(anchor(t.frame), a)
+                    // A stacked group gets one icon, on the bottom edge of one of its windows but not centred.
+                    || (abs(t.frame.maxY - a.y) < 6 && t.frame.minX < a.x && a.x < t.frame.maxX && fits(i, t))
             }
         }
-        search([], Set(free.indices), 0)
+
+        let ratios = known.compactMap { t in t.windowID.flatMap { bounds[$0] }.map { t.frame.width / max($0.width, 1) } }.sorted()
+        guard !free.isEmpty, lost.count <= 6, free.count <= 10, !ratios.isEmpty else { return [] }
+        let scale = ratios[ratios.count / 2]
+
+        // Cheapest partial assignment of lost windows to free icons (a window may get none:
+        // it may not be drawn here, or an icon may belong to something we don't know about).
+        let key = lost.map { "\($0.windowID ?? 0)" }.joined(separator: ",") + "|" + free.map { "\($0)" }.joined()
+        let best: [Int?]
+        if key == assignmentKey { best = assignment } else {
+            var bestPerm: [Int?] = [], bestCost = CGFloat.infinity
+            let unassigned: CGFloat = 1500
+            func search(_ perm: [Int?], _ rest: Set<Int>, _ cost: CGFloat) {
+                guard cost < bestCost else { return }
+                if perm.count == lost.count { bestPerm = perm; bestCost = cost; return }
+                let t = lost[perm.count], a = anchor(t.frame)
+                for i in rest where fits(free[i], t) {
+                    let b = anchor(icon: free[i])
+                    search(perm + [i], rest.subtracting([i]), cost + hypot(a.x - b.x, a.y - b.y))
+                }
+                search(perm + [nil], rest, cost + unassigned)
+            }
+            search([], Set(free.indices), 0)
+            best = bestPerm; assignmentKey = key; assignment = best
+        }
 
         return zip(lost, best).compactMap { t, i in
-            guard let wid = t.windowID, let real = bounds[wid] else { return nil }
+            guard let i, let wid = t.windowID, let real = bounds[wid] else { return nil }
             let w = real.width * scale, h = real.height * scale, a = anchor(icon: free[i])
             return Thumbnail(title: t.title, frame: CGRect(x: a.x - w / 2, y: a.y - h, width: w, height: h),
                              bundleID: t.bundleID, windowID: wid, spaceID: t.spaceID)
