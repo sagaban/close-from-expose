@@ -156,32 +156,11 @@ final class MissionControl {
         return sanitize(out)
     }
 
-    /// Windows assigned to several desktops (e.g. "Options → Assign To → All Desktops") show up only
-    /// under another Space's identifier, listed twice, with that Space's frame — not where they're
-    /// drawn. Keep the current Space's thumbnails once per window, and rebuild the others' frames.
+    /// Windows assigned to several desktops (e.g. "Options → Assign To → All Desktops") are listed
+    /// under the wrong Space, several times, with stale frames (entries from earlier sessions stay
+    /// in the tree; newer ones are appended). Keep each current-Space window once, preferring the
+    /// entry that sits on a WindowManager icon, then the newest; rebuild the other windows' frames.
     func sanitize(_ ts: [Thumbnail]) -> [Thumbnail] {
-        func dedupe(_ ts: [Thumbnail]) -> [Thumbnail] {
-            var seen = Set<CGWindowID>()
-            return ts.filter { t in t.windowID.map { seen.insert($0).inserted } ?? true }
-        }
-        let current = currentSpaces()
-        guard !current.isEmpty, ts.contains(where: { $0.spaceID.map(current.contains) == true }) else { return dedupe(ts) }
-        let here = dedupe(ts.filter { $0.spaceID.map(current.contains) ?? true })
-        let hereIDs = Set(here.compactMap(\.windowID))
-        let elsewhere = dedupe(ts.filter { t in
-            guard let s = t.spaceID, !current.contains(s), let wid = t.windowID, !hereIDs.contains(wid) else { return false }
-            return !current.isDisjoint(with: spaces(ofWindow: wid))
-        })
-        return here + relocate(elsewhere, known: here)
-    }
-
-    /// WindowManager draws an "App Icon Window" (layer 17) centred on every thumbnail's bottom edge,
-    /// including the ones whose AX frame is wrong. Icons not claimed by a known thumbnail mark where
-    /// the others really are; thumbnails share one scale, so the size comes from the real window.
-    /// Identity: icon width (it fits the app name) rules out pairings; among the rest, the assignment
-    /// that best preserves their positions from the other Space's layout.
-    func relocate(_ lost: [Thumbnail], known: [Thumbnail]) -> [Thumbnail] {
-        guard !lost.isEmpty else { return [] }
         let list = (CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]]) ?? []
         var bounds: [CGWindowID: CGRect] = [:]
         var icons: [CGRect] = []
@@ -192,10 +171,43 @@ final class MissionControl {
                (w[kCGWindowLayer as String] as? Int) == 17,  // name ("App Icon Window") needs Screen Recording
                (w[kCGWindowIsOnscreen as String] as? Bool) == true { icons.append(r) }
         }
-        let iconOffset: CGFloat = 41  // thumbnail bottom edge = icon.minY + 41
-        func anchor(_ f: CGRect) -> CGPoint { CGPoint(x: f.midX, y: f.maxY) }
-        func anchor(icon r: CGRect) -> CGPoint { CGPoint(x: r.midX, y: r.minY + iconOffset) }
-        func near(_ a: CGPoint, _ b: CGPoint) -> Bool { abs(a.x - b.x) < 6 && abs(a.y - b.y) < 6 }
+        func onIcon(_ t: Thumbnail) -> Bool { icons.contains { Self.near(Self.anchor(t.frame), Self.anchor(icon: $0)) } }
+        func dedupe(_ ts: [Thumbnail]) -> [Thumbnail] {
+            var pick: [CGWindowID: Int] = [:]
+            for (i, t) in ts.enumerated() {
+                guard let wid = t.windowID else { continue }
+                if let p = pick[wid], onIcon(ts[p]), !onIcon(t) { continue }
+                pick[wid] = i
+            }
+            let keep = Set(pick.values)
+            return ts.enumerated().filter { $0.element.windowID == nil || keep.contains($0.offset) }.map(\.element)
+        }
+        let current = currentSpaces()
+        guard !current.isEmpty, ts.contains(where: { $0.spaceID.map(current.contains) == true }) else { return dedupe(ts) }
+        let here = dedupe(ts.filter { $0.spaceID.map(current.contains) ?? true })
+        let hereIDs = Set(here.compactMap(\.windowID))
+        let elsewhere = dedupe(ts.filter { t in
+            guard let s = t.spaceID, !current.contains(s), let wid = t.windowID, !hereIDs.contains(wid) else { return false }
+            return !current.isDisjoint(with: spaces(ofWindow: wid))
+        })
+        return here + relocate(elsewhere, known: here, icons: icons, bounds: bounds)
+    }
+
+    static let iconOffset: CGFloat = 41  // thumbnail bottom edge = icon.minY + 41
+    static func anchor(_ f: CGRect) -> CGPoint { CGPoint(x: f.midX, y: f.maxY) }
+    static func anchor(icon r: CGRect) -> CGPoint { CGPoint(x: r.midX, y: r.minY + iconOffset) }
+    static func near(_ a: CGPoint, _ b: CGPoint) -> Bool { abs(a.x - b.x) < 6 && abs(a.y - b.y) < 6 }
+
+    /// WindowManager draws an "App Icon Window" (layer 17) centred on every thumbnail's bottom edge,
+    /// including the ones whose AX frame is wrong. Icons not claimed by a known thumbnail mark where
+    /// the others really are; thumbnails share one scale, so the size comes from the real window.
+    /// Identity: icon width (it fits the app name) rules out pairings; among the rest, the assignment
+    /// that best preserves their positions from the other Space's layout.
+    func relocate(_ lost: [Thumbnail], known: [Thumbnail], icons: [CGRect], bounds: [CGWindowID: CGRect]) -> [Thumbnail] {
+        guard !lost.isEmpty else { return [] }
+        func anchor(_ f: CGRect) -> CGPoint { Self.anchor(f) }
+        func anchor(icon r: CGRect) -> CGPoint { Self.anchor(icon: r) }
+        func near(_ a: CGPoint, _ b: CGPoint) -> Bool { Self.near(a, b) }
         // An icon's width fits the app name under it: max(66, name in system 13 pt + 1).
         func fits(_ icon: CGRect, _ t: Thumbnail) -> Bool {
             guard let name = t.bundleID.flatMap({ NSRunningApplication.runningApplications(withBundleIdentifier: $0).first?.localizedName })
